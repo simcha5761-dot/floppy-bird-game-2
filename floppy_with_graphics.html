@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Floppy Bird — Ready</title>
+<style>
+  html,body{height:100%;margin:0;background:#70c5ce;font-family:Arial,Helvetica,sans-serif}
+  #gameWrap{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
+  canvas{background:linear-gradient(#70c5ce,#a0e0f0);display:block;border:0}
+  .download-note{position:fixed;left:8px;top:8px;background:rgba(255,255,255,0.9);padding:8px 12px;border-radius:8px;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,0.15)}
+</style>
+</head>
+<body>
+<div id="gameWrap">
+  <canvas id="gameCanvas"></canvas>
+</div>
+<div class="download-note">Tap / Click to play — Best stored locally</div>
+
+<script>
+// Responsive canvas
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.min(window.innerWidth, 820) * ratio;
+  canvas.height = Math.min(window.innerHeight, 680) * ratio;
+  canvas.style.width = Math.min(window.innerWidth, 820) + 'px';
+  canvas.style.height = Math.min(window.innerHeight, 680) + 'px';
+  ctx.setTransform(ratio,0,0,ratio,0,0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Utility: draw image from inline SVG string
+function svgToImg(svgStr, cb) {
+  const img = new Image();
+  img.onload = () => cb(img);
+  img.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svgStr);
+}
+
+// Simple SVG sprites (small, crisp)
+const birdSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="60" height="44" viewBox="0 0 60 44">
+  <g>
+    <ellipse cx="26" cy="22" rx="18" ry="12" fill="#FFDC34"/>
+    <circle cx="34" cy="16" r="3.8" fill="#000"/>
+    <path d="M44 22c3-1 6-1 8 0 1 1 0 3-1 4-2 1-5 1-7 0-1-1-2-3-0-4z" fill="#FF9F1C"/>
+    <path d="M12 28c4 1 8 1 12 0 1-1 1-2 0-3-3-2-9-2-13 0-1 1-1 2 1 3z" fill="#FFA"/>
+  </g>
+</svg>`;
+
+const pipeSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="600" viewBox="0 0 120 600">
+  <rect x="0" y="0" width="120" height="600" fill="#2da34a"/>
+  <rect x="0" y="0" width="120" height="36" fill="#1f7a31"/>
+</svg>`;
+
+const bgSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+  <defs>
+    <linearGradient id="g" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#70c5ce"/>
+      <stop offset="1" stop-color="#a0e0f0"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="600" fill="url(#g)"/>
+  <g opacity="0.12">
+    <circle cx="120" cy="110" r="60" fill="#fff"/>
+    <circle cx="560" cy="80" r="36" fill="#fff"/>
+    <circle cx="700" cy="160" r="24" fill="#fff"/>
+  </g>
+</svg>`;
+
+// Placeholders for images
+let birdImg, pipeImg, bgImg;
+svgToImg(birdSVG, img => birdImg = img);
+svgToImg(pipeSVG, img => pipeImg = img);
+svgToImg(bgSVG, img => bgImg = img);
+
+// Audio using WebAudio API (simple sounds)
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+function playBeep(type='flap') {
+  ensureAudio();
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.connect(g); g.connect(audioCtx.destination);
+  if (type==='flap') { o.frequency.value = 520; g.gain.value = 0.06; o.type='sine'; }
+  else if (type==='point') { o.frequency.value = 720; g.gain.value = 0.08; o.type='square'; }
+  else { o.frequency.value = 160; g.gain.value = 0.12; o.type='sawtooth'; }
+  o.start();
+  g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.12);
+  o.stop(audioCtx.currentTime + 0.14);
+}
+
+// Game variables
+let frames = 0;
+const DEG = Math.PI/180;
+const state = { getReady:0, game:1, over:2 };
+let currentState = state.getReady;
+
+// Bird
+const bird = {
+  x: 120, y: 180, w: 40, h: 30,
+  frame:0, rotation:0,
+  gravity: 0.45, jump: 8.2, speed: 0,
+  draw() {
+    if (!birdImg) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rotation);
+      ctx.fillStyle = '#FFDC34';
+      ctx.fillRect(-this.w/2, -this.h/2, this.w, this.h);
+      ctx.restore();
+      return;
+    }
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.rotation);
+    ctx.drawImage(birdImg, -this.w/2 - 4, -this.h/2 - 4, this.w+8, this.h+8);
+    ctx.restore();
+  },
+  flap() { this.speed = -this.jump; playBeep('flap'); },
+  update() {
+    if (currentState === state.getReady) {
+      this.y = 180;
+      this.rotation = 0;
+    } else {
+      this.speed += this.gravity;
+      this.y += this.speed;
+      if (this.y + this.h/2 >= canvas.height - 50) {
+        this.y = canvas.height - 50 - this.h/2;
+        if (currentState === state.game) {
+          triggerGameOver();
+        }
+      }
+      // rotation
+      if (this.speed >= this.jump) this.rotation = 90*DEG;
+      else this.rotation = -25*DEG;
+    }
+  }
+};
+
+// Pipes manager
+const pipes = {
+  arr: [],
+  w: 56,
+  gap: 140,
+  dx: 2.4,
+  spawn() {
+    const min = 80;
+    const max = canvas.height - 220;
+    const top = Math.floor(Math.random()*(max-min)) + min;
+    this.arr.push({ x: canvas.width + 40, y: top - 600 }); // y is negative offset for top pipe (drawn from top)
+  },
+  draw() {
+    if (!pipeImg) {
+      ctx.fillStyle = '#2da34a';
+      this.arr.forEach(p => {
+        ctx.fillRect(p.x, p.y+600, this.w, 600); // top pipe (y+600 because p.y negative)
+        ctx.fillRect(p.x, p.y+600 + 600 + this.gap, this.w, 600); // bottom pipe
+      });
+      return;
+    }
+    this.arr.forEach(p => {
+      // top pipe (draw anchored at top)
+      ctx.drawImage(pipeImg, p.x, p.y+600, this.w, 600);
+      // bottom pipe (gap)
+      ctx.drawImage(pipeImg, p.x, p.y+600 + 600 + this.gap, this.w, 600);
+    });
+  },
+  update() {
+    if (currentState !== state.game) return;
+    if (frames % 110 === 0) this.spawn();
+    for (let i = 0; i < this.arr.length; i++) {
+      const p = this.arr[i];
+      p.x -= this.dx;
+      // collision check
+      const bx1 = bird.x - bird.w/2;
+      const bx2 = bird.x + bird.w/2;
+      const by1 = bird.y - bird.h/2;
+      const by2 = bird.y + bird.h/2;
+      const px1 = p.x;
+      const px2 = p.x + this.w;
+      const topY = p.y+600 + this.w/0; // top pipe vertical end (approx)
+      const topBottom = p.y+600 + 600; // bottom of top pipe
+      const gapTop = p.y+600 + 600;
+      const gapBottom = gapTop + this.gap;
+      // collision simplified rectangle vs rects
+      if (bx2 > px1 && bx1 < px2) {
+        if (by1 < topBottom || by2 > gapBottom) {
+          triggerGameOver();
+        }
+      }
+      // score increment: when pipe passes bird center
+      if (!p.passed && p.x + this.w < bird.x) {
+        p.passed = true;
+        score.value++;
+        score.best = Math.max(score.value, score.best);
+        localStorage.setItem('floppy_best', score.best);
+        playBeep('point');
+      }
+    }
+    // remove off-screen
+    this.arr = this.arr.filter(p => p.x + this.w > -60);
+  },
+  reset() { this.arr = []; }
+};
+
+// Score
+const score = { value:0, best: parseInt(localStorage.getItem('floppy_best')) || 0 };
+
+// Ground draw
+function drawGround() {
+  ctx.fillStyle = '#d2691e';
+  ctx.fillRect(0, canvas.height - 50, canvas.width, 50);
+}
+
+// Draw function
+function draw() {
+  // background
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (bgImg) ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
+  else { ctx.fillStyle='#70c5ce'; ctx.fillRect(0,0,canvas.width,canvas.height); }
+
+  pipes.draw();
+  drawGround();
+  bird.draw();
+
+  // score
+  ctx.fillStyle = '#fff';
+  ctx.font = '40px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(score.value, canvas.width/2, 60);
+
+  if (currentState === state.getReady) {
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.font = '18px Arial';
+    ctx.fillText('Tap/Click to start. Tap to flap.', canvas.width/2, canvas.height/2 - 40);
+  }
+  if (currentState === state.over) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(canvas.width/2 - 140, canvas.height/2 - 60, 280, 120);
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px Arial';
+    ctx.fillText('Game Over', canvas.width/2, canvas.height/2 - 20);
+    ctx.fillText('Tap to restart', canvas.width/2, canvas.height/2 + 12);
+    ctx.fillText('Best: ' + score.best, canvas.width/2, canvas.height/2 + 44);
+  }
+}
+
+// Update
+function update() {
+  bird.update();
+  pipes.update();
+}
+
+// Loop
+function loop() {
+  update();
+  draw();
+  frames++;
+  requestAnimationFrame(loop);
+}
+loop();
+
+function startGame() {
+  if (currentState === state.getReady) {
+    currentState = state.game;
+    // wake audio on first user gesture
+    ensureAudio();
+  }
+}
+
+function triggerGameOver() {
+  if (currentState === state.over) return;
+  currentState = state.over;
+  playBeep('hit');
+}
+
+// Input handlers
+function onInputStart(e) {
+  e.preventDefault();
+  if (currentState === state.getReady) { startGame(); bird.flap(); return; }
+  if (currentState === state.game) { bird.flap(); return; }
+  if (currentState === state.over) { // restart
+    pipes.reset();
+    score.value = 0;
+    bird.y = 180; bird.speed = 0;
+    currentState = state.getReady;
+  }
+}
+canvas.addEventListener('touchstart', onInputStart, {passive:false});
+canvas.addEventListener('mousedown', onInputStart);
+
+// ensure initial user interaction
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resize(); });
+
+// Preload images (already created from SVG)
+svgToImg(birdSVG, img => birdImg = img);
+svgToImg(pipeSVG, img => pipeImg = img);
+svgToImg(bgSVG, img => bgImg = img);
+
+</script>
+</body>
+</html>
